@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Code Context Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        /* Hide the default file input */
+        #folder-input {
+            display: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-300 flex items-center justify-center min-h-screen">
+
+    <div class="bg-slate-800 border border-slate-700 rounded-xl p-8 max-w-2xl w-full mx-4 shadow-2xl">
+        <div class="text-center">
+            <h1 class="text-3xl font-bold text-white mb-2">LLM Code Context Generator</h1>
+            <p class="text-slate-400 mb-6">Select a project folder to generate a single Markdown file containing its directory structure and code content.</p>
+        </div>
+
+        <!-- File Input and Main Button -->
+        <div class="mb-6">
+            <label for="folder-input" class="w-full text-center cursor-pointer bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 px-6 rounded-lg inline-block transition duration-300 ease-in-out transform hover:scale-105">
+                Select Project Folder
+            </label>
+            <input type="file" id="folder-input" webkitdirectory directory multiple>
+        </div>
+
+        <!-- Status and Download Area -->
+        <div class="bg-slate-900/50 rounded-lg p-4 min-h-[100px] flex flex-col items-center justify-center">
+            <p id="status" class="text-slate-400 text-center">Waiting for folder selection...</p>
+            <button id="download-btn" class="hidden mt-4 bg-green-600 hover:bg-green-500 text-white font-bold py-2 px-5 rounded-lg transition duration-300 ease-in-out disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-green-600" disabled>
+                Download Context File
+            </button>
+        </div>
+
+    </div>
+
+    <script>
+        const folderInput = document.getElementById('folder-input');
+        const statusEl = document.getElementById('status');
+        const downloadBtn = document.getElementById('download-btn');
+        
+        let generatedMarkdown = '';
+        let projectRootName = 'project';
+        // The download counter is no longer needed.
+
+        const codeExtensions = new Set([
+            'py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'json', 'md', 'sh', 'bat', 'yaml', 'yml', 'sql', 'dockerfile', 'java', 'c', 'cpp', 'cs', 'go', 'php', 'rb', 'rs', 'swift', 'kt', 'kts', 'vue', 'svelte', 'graphql'
+        ]);
+        
+        const ignoredDirs = ['node_modules', '.git', '.venv'];
+
+        folderInput.addEventListener('change', handleFolderSelection);
+        downloadBtn.addEventListener('click', handleDownload);
+
+        async function handleFolderSelection(event) {
+            const files = event.target.files;
+            if (files.length === 0) return;
+
+            // Reset state
+            resetUI();
+            statusEl.textContent = `Processing ${files.length} files...`;
+            
+            projectRootName = getProjectRootName(files);
+            const fileTree = {};
+            const fileReadPromises = [];
+
+            for (const file of files) {
+                const path = file.webkitRelativePath;
+                const pathParts = path.split('/');
+                
+                // Build directory tree, but stop traversing into ignored directories
+                let currentLevel = fileTree;
+                let pathIsIgnored = false;
+                // Traverse the directory parts of the path
+                for (let i = 0; i < pathParts.length - 1; i++) {
+                    const part = pathParts[i];
+                    if (!currentLevel[part]) {
+                        currentLevel[part] = {};
+                    }
+                    currentLevel = currentLevel[part];
+
+                    // If we encounter an ignored directory, we stop adding children to it for the tree view
+                    if (ignoredDirs.includes(part)) {
+                        pathIsIgnored = true;
+                        break;
+                    }
+                }
+
+                // Only add the file to the tree if its parent directory was not ignored
+                if (!pathIsIgnored) {
+                    currentLevel[pathParts[pathParts.length - 1]] = null; // Mark as file
+                }
+
+                // Still, only read content of files that are not in an ignored path at all
+                if (!pathParts.some(part => ignoredDirs.includes(part))) {
+                    const extension = path.split('.').pop().toLowerCase();
+                    if (codeExtensions.has(extension)) {
+                        fileReadPromises.push(readFileContent(file));
+                    }
+                }
+            }
+
+            try {
+                const fileContents = await Promise.all(fileReadPromises);
+                const treeString = generateTreeString(fileTree);
+                
+                let markdown = `# Project: ${projectRootName}\n\n`;
+                markdown += '## Directory Structure\n\n';
+                markdown += '```\n';
+                markdown += `${projectRootName}/\n${treeString}`;
+                markdown += '```\n\n';
+                markdown += '## File Contents\n\n';
+                
+                fileContents.forEach(content => {
+                    markdown += `--- FILE: ${content.path} ---\n\n`;
+                    markdown += '```' + (content.path.split('.').pop() || '') + '\n';
+                    markdown += content.content + '\n';
+                    markdown += '```\n\n';
+                });
+
+                generatedMarkdown = markdown;
+                statusEl.textContent = 'Generation complete! Ready to download.';
+                downloadBtn.disabled = false;
+                downloadBtn.classList.remove('hidden');
+
+            } catch (error) {
+                statusEl.textContent = 'Error processing files. Please check the console.';
+                console.error('Error:', error);
+            }
+        }
+
+        function getProjectRootName(files) {
+            if (files.length > 0) {
+                const firstPath = files[0].webkitRelativePath;
+                return firstPath.split('/')[0] || 'project';
+            }
+            return 'project';
+        }
+
+        function readFileContent(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve({
+                    path: file.webkitRelativePath,
+                    content: reader.result
+                });
+                reader.onerror = () => reject(reader.error);
+                reader.readAsText(file);
+            });
+        }
+
+        function generateTreeString(tree, prefix = '') {
+            let result = '';
+            const entries = Object.keys(tree);
+            entries.forEach((entry, index) => {
+                const isLast = index === entries.length - 1;
+                const connector = isLast ? '└── ' : '├── ';
+                result += prefix + connector + entry + '\n';
+                if (tree[entry] !== null) { // It's a directory
+                    const newPrefix = prefix + (isLast ? '    ' : '│   ');
+                    result += generateTreeString(tree[entry], newPrefix);
+                }
+            });
+            return result;
+        }
+
+        function handleDownload() {
+            if (!generatedMarkdown) return;
+            
+            const date = new Date();
+            const dateString = `${date.getFullYear()}${(date.getMonth() + 1).toString().padStart(2, '0')}${date.getDate().toString().padStart(2, '0')}`;
+            const filename = `${projectRootName}-${dateString}.md`; // Removed the counter
+
+            const blob = new Blob([generatedMarkdown], { type: 'text/markdown' });
+            const url = URL.createObjectURL(blob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function resetUI() {
+            statusEl.textContent = 'Waiting for folder selection...';
+            downloadBtn.disabled = true;
+            downloadBtn.classList.add('hidden');
+            generatedMarkdown = '';
+        }
+    </script>
+</body>
+</html>
+
+
